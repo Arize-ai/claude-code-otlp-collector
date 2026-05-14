@@ -1,0 +1,6 @@
+.DS_Store
+/.env
+/bin/
+/dist/
+/coverage.out
+/claude-collector
