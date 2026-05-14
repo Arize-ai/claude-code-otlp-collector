@@ -320,14 +320,15 @@ func TestLogRequestBodyLinksByPromptAndQuerySourceOrder(t *testing.T) {
 }
 
 func TestLogResponseBodyReadsBodyRef(t *testing.T) {
-	bodyPath := t.TempDir() + "/response.json"
+	dir := t.TempDir()
+	bodyPath := filepath.Join(dir, "req_1.response.json")
 	if err := os.WriteFile(bodyPath, []byte(`{"id":"msg_1","role":"assistant","content":[{"type":"text","text":"Done from file."}]}`), 0o600); err != nil {
 		t.Fatal(err)
 	}
 
 	traceID := []byte("1234567890123456")
 	spanID := []byte("12345678")
-	store := NewOutputStore(OutputStoreConfig{AllowBodyRef: true})
+	store := NewOutputStore(OutputStoreConfig{AllowBodyRef: true, BodyRefCleanupRoots: []string{dir}})
 	logs := &collectorlogsv1.ExportLogsServiceRequest{
 		ResourceLogs: []*logsv1.ResourceLogs{{
 			ScopeLogs: []*logsv1.ScopeLogs{{
@@ -359,13 +360,14 @@ func TestLogResponseBodyReadsBodyRef(t *testing.T) {
 }
 
 func TestLogRequestBodyReadsBodyRef(t *testing.T) {
-	bodyPath := t.TempDir() + "/request.json"
+	dir := t.TempDir()
+	bodyPath := filepath.Join(dir, "req_1.request.json")
 	requestBody := `{"messages":[{"role":"user","content":"from file"}]}`
 	if err := os.WriteFile(bodyPath, []byte(requestBody), 0o600); err != nil {
 		t.Fatal(err)
 	}
 
-	store := NewOutputStore(OutputStoreConfig{AllowBodyRef: true})
+	store := NewOutputStore(OutputStoreConfig{AllowBodyRef: true, BodyRefCleanupRoots: []string{dir}})
 	logs := &collectorlogsv1.ExportLogsServiceRequest{
 		ResourceLogs: []*logsv1.ResourceLogs{{
 			ScopeLogs: []*logsv1.ScopeLogs{{
@@ -458,6 +460,93 @@ func TestBodyRefCleanupKeepsDisallowedFiles(t *testing.T) {
 		if _, err := os.Stat(path); err != nil {
 			t.Fatalf("expected %s to remain, stat error: %v", path, err)
 		}
+	}
+}
+
+func TestBodyRefRefusesReadOutsideAllowedRoot(t *testing.T) {
+	allowedDir := t.TempDir()
+	outsideDir := t.TempDir()
+	outsidePath := filepath.Join(outsideDir, "req_evil.response.json")
+	if err := os.WriteFile(outsidePath, []byte(`{"id":"msg_1","role":"assistant","content":[{"type":"text","text":"leaked"}]}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	store := NewOutputStore(OutputStoreConfig{
+		AllowBodyRef:        true,
+		BodyRefCleanupRoots: []string{allowedDir},
+	})
+	logs := &collectorlogsv1.ExportLogsServiceRequest{
+		ResourceLogs: []*logsv1.ResourceLogs{{
+			ScopeLogs: []*logsv1.ScopeLogs{{
+				LogRecords: []*logsv1.LogRecord{{
+					Attributes: testAttrs(map[string]any{
+						"event.name": "api_response_body",
+						"body_ref":   "file:" + outsidePath,
+					}),
+				}},
+			}},
+		}},
+	}
+	if got := store.IngestLogRequest(logs); got != 0 {
+		t.Fatalf("stored outputs = %d, want 0 (read outside allowed root must be refused)", got)
+	}
+}
+
+func TestBodyRefRefusesSymlinkEscape(t *testing.T) {
+	allowedDir := t.TempDir()
+	secretDir := t.TempDir()
+	secretPath := filepath.Join(secretDir, "secret.response.json")
+	if err := os.WriteFile(secretPath, []byte(`{"id":"msg_1","role":"assistant","content":[{"type":"text","text":"secret"}]}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	symlinkPath := filepath.Join(allowedDir, "req_link.response.json")
+	if err := os.Symlink(secretPath, symlinkPath); err != nil {
+		t.Skipf("symlink unsupported on this filesystem: %v", err)
+	}
+
+	store := NewOutputStore(OutputStoreConfig{
+		AllowBodyRef:        true,
+		BodyRefCleanupRoots: []string{allowedDir},
+	})
+	logs := &collectorlogsv1.ExportLogsServiceRequest{
+		ResourceLogs: []*logsv1.ResourceLogs{{
+			ScopeLogs: []*logsv1.ScopeLogs{{
+				LogRecords: []*logsv1.LogRecord{{
+					Attributes: testAttrs(map[string]any{
+						"event.name": "api_response_body",
+						"body_ref":   "file:" + symlinkPath,
+					}),
+				}},
+			}},
+		}},
+	}
+	if got := store.IngestLogRequest(logs); got != 0 {
+		t.Fatalf("stored outputs = %d, want 0 (symlink escape must be refused)", got)
+	}
+}
+
+func TestBodyRefRefusesReadWithoutAllowedRoots(t *testing.T) {
+	dir := t.TempDir()
+	bodyPath := filepath.Join(dir, "req_1.response.json")
+	if err := os.WriteFile(bodyPath, []byte(`{"id":"msg_1","role":"assistant","content":[{"type":"text","text":"x"}]}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	store := NewOutputStore(OutputStoreConfig{AllowBodyRef: true})
+	logs := &collectorlogsv1.ExportLogsServiceRequest{
+		ResourceLogs: []*logsv1.ResourceLogs{{
+			ScopeLogs: []*logsv1.ScopeLogs{{
+				LogRecords: []*logsv1.LogRecord{{
+					Attributes: testAttrs(map[string]any{
+						"event.name": "api_response_body",
+						"body_ref":   "file:" + bodyPath,
+					}),
+				}},
+			}},
+		}},
+	}
+	if got := store.IngestLogRequest(logs); got != 0 {
+		t.Fatalf("stored outputs = %d, want 0 (no allow-list roots configured)", got)
 	}
 }
 

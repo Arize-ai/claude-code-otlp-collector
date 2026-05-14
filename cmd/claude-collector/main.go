@@ -37,6 +37,13 @@ func main() {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
+	bodyRefRoots := parseList(*bodyRefCleanupRoots)
+	if *allowBodyRef && len(bodyRefRoots) == 0 {
+		logger.Warn("allow-body-ref is enabled but body-ref-cleanup-roots is empty; body_ref reads will be refused",
+			"flag", "--body-ref-cleanup-roots",
+			"env", "CLAUDE_COLLECTOR_BODY_REF_CLEANUP_ROOTS")
+	}
+
 	fileExporter, err := otelhttp.NewFileExporter(*exportFile)
 	if err != nil {
 		logger.Error("failed to open export file", "path", *exportFile, "error", err)
@@ -63,7 +70,7 @@ func main() {
 			TTL:                 *outputTTL,
 			AllowBodyRef:        *allowBodyRef,
 			BodyRefCleanupTTL:   *bodyRefCleanupTTL,
-			BodyRefCleanupRoots: parseList(*bodyRefCleanupRoots),
+			BodyRefCleanupRoots: bodyRefRoots,
 			BodyRefSuffixes:     parseList(*bodyRefSuffixes),
 		}),
 		Logger: logger,

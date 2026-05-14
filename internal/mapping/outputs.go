@@ -246,10 +246,12 @@ func (s *OutputStore) payloadBody(record *logsv1.LogRecord) (string, error) {
 	if s.allowBodyRef {
 		if bodyRef, ok := getString(record.GetAttributes(), "body_ref"); ok && bodyRef != "" {
 			path := normalizeBodyRefPath(bodyRef)
-			body, err := readBodyRefPath(path)
-			if err == nil && body != "" {
-				s.trackBodyRefLocked(path, time.Now())
-				return body, nil
+			if resolved, ok := s.bodyRefReadAllowed(path); ok {
+				body, err := readBodyRefPath(resolved)
+				if err == nil && body != "" {
+					s.trackBodyRefLocked(resolved, time.Now())
+					return body, nil
+				}
 			}
 		}
 	}
@@ -266,12 +268,7 @@ func (s *OutputStore) payloadBody(record *logsv1.LogRecord) (string, error) {
 	if !s.allowBodyRef {
 		return "", errors.New("body_ref reading is disabled")
 	}
-	path := normalizeBodyRefPath(bodyRef)
-	body, err := readBodyRefPath(path)
-	if err == nil && body != "" {
-		s.trackBodyRefLocked(path, time.Now())
-	}
-	return body, err
+	return "", errors.New("body_ref path is not within an allowed read root")
 }
 
 func normalizeBodyRefPath(bodyRef string) string {
@@ -304,26 +301,57 @@ func cleanBodyRefRoots(roots []string) []string {
 }
 
 func (s *OutputStore) trackBodyRefLocked(path string, seenAt time.Time) {
-	if len(s.bodyRefCleanupRoots) == 0 || !s.bodyRefCleanupAllowed(path) {
+	if len(s.bodyRefCleanupRoots) == 0 {
+		return
+	}
+	if _, ok := s.bodyRefReadAllowed(path); !ok {
 		return
 	}
 	s.bodyRefs[path] = seenAt
 }
 
-func (s *OutputStore) bodyRefCleanupAllowed(path string) bool {
-	if path == "" {
-		return false
+// bodyRefReadAllowed reports whether the given body_ref path is allowed to be
+// read or deleted. It returns the symlink-resolved absolute path when allowed.
+//
+// A path is allowed only when: body_ref reading is enabled, at least one
+// allow-list root is configured, the path's suffix matches the allow-list,
+// and the path's symlink-resolved absolute form lies within an allowed root
+// (also symlink-resolved). This containment check defends against path
+// traversal and symlink-escape from an attacker-controlled `body_ref`
+// attribute on the unauthenticated OTLP /v1/logs endpoint.
+func (s *OutputStore) bodyRefReadAllowed(path string) (string, bool) {
+	if path == "" || !s.allowBodyRef || len(s.bodyRefCleanupRoots) == 0 {
+		return "", false
 	}
-	cleanPath := filepath.Clean(path)
-	if !hasAllowedSuffix(cleanPath, s.bodyRefSuffixes) {
-		return false
+	if !hasAllowedSuffix(filepath.Clean(path), s.bodyRefSuffixes) {
+		return "", false
+	}
+	resolvedPath, ok := resolveAbsPath(path)
+	if !ok {
+		return "", false
 	}
 	for _, root := range s.bodyRefCleanupRoots {
-		if isPathWithinRoot(cleanPath, root) {
-			return true
+		resolvedRoot, ok := resolveAbsPath(root)
+		if !ok {
+			continue
+		}
+		if isPathWithinRoot(resolvedPath, resolvedRoot) {
+			return resolvedPath, true
 		}
 	}
-	return false
+	return "", false
+}
+
+func resolveAbsPath(path string) (string, bool) {
+	abs, err := filepath.Abs(path)
+	if err != nil {
+		return "", false
+	}
+	resolved, err := filepath.EvalSymlinks(abs)
+	if err != nil {
+		return "", false
+	}
+	return filepath.Clean(resolved), true
 }
 
 func hasAllowedSuffix(path string, suffixes []string) bool {
@@ -599,7 +627,7 @@ func (s *OutputStore) pruneBodyRefsLocked(now time.Time) {
 		if !seenAt.Before(cutoff) {
 			continue
 		}
-		if s.bodyRefCleanupAllowed(path) {
+		if _, ok := s.bodyRefReadAllowed(path); ok {
 			_ = os.Remove(path)
 		}
 		delete(s.bodyRefs, path)

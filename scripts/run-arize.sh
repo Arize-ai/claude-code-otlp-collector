@@ -25,4 +25,7 @@ exec go run ./cmd/claude-collector \
   --project-name "${ARIZE_PROJECT_NAME:-claude-oltp-direct}" \
   --project-from-resource-attribute "${CLAUDE_COLLECTOR_PROJECT_FROM_RESOURCE_ATTRIBUTE:-}" \
   --allow-body-ref="${CLAUDE_COLLECTOR_ALLOW_BODY_REF:-false}" \
+  --body-ref-cleanup-roots "${CLAUDE_COLLECTOR_BODY_REF_CLEANUP_ROOTS:-}" \
+  --body-ref-cleanup-ttl "${CLAUDE_COLLECTOR_BODY_REF_CLEANUP_TTL:-1h}" \
+  --body-ref-cleanup-suffixes "${CLAUDE_COLLECTOR_BODY_REF_CLEANUP_SUFFIXES:-.request.json,.response.json}" \
   --forward-logs=false

@@ -56,8 +56,11 @@ ARIZE_OTLP_ENDPOINT=https://otlp.arize.com/v1/traces
 
 CLAUDE_COLLECTOR_LISTEN=:14318
 CLAUDE_COLLECTOR_ALLOW_BODY_REF=true
+CLAUDE_COLLECTOR_BODY_REF_CLEANUP_ROOTS=/tmp/claude-code-otel-bodies
 CLAUDE_COLLECTOR_EXPORT_FILE=/tmp/claude-collector-latest.jsonl
 ```
+
+`CLAUDE_COLLECTOR_BODY_REF_CLEANUP_ROOTS` is required whenever `CLAUDE_COLLECTOR_ALLOW_BODY_REF=true`: the collector only reads `body_ref` files whose resolved path lies inside one of these directories and whose suffix matches `CLAUDE_COLLECTOR_BODY_REF_CLEANUP_SUFFIXES`. Without it, body_ref reads are refused. The OTLP listener is unauthenticated, and `body_ref` values come from the network, so this allow-list is what prevents an attacker from coercing the collector into reading arbitrary files.
 
 Optional dynamic project naming from a Claude Code resource attribute:
 
@@ -67,10 +70,9 @@ CLAUDE_COLLECTOR_PROJECT_FROM_RESOURCE_ATTRIBUTE=team.name
 
 When this is set, the collector copies the incoming resource attribute value directly into Arize/OpenInference project attributes. For example, if the Claude Code process sets `OTEL_RESOURCE_ATTRIBUTES=team.name=search`, the forwarded spans use project name `search`. `ARIZE_PROJECT_NAME` remains the fallback when the resource attribute is missing.
 
-Optional body-ref cleanup:
+Optional body-ref cleanup tuning (the roots above are reused; only the TTL and suffix list are tunable):
 
 ```bash
-CLAUDE_COLLECTOR_BODY_REF_CLEANUP_ROOTS=/tmp/claude-code-otel-bodies
 CLAUDE_COLLECTOR_BODY_REF_CLEANUP_TTL=1h
 CLAUDE_COLLECTOR_BODY_REF_CLEANUP_SUFFIXES=.request.json,.response.json
 ```
@@ -171,6 +173,7 @@ go run ./cmd/claude-collector \
   --exporter-endpoint none \
   --export-file /tmp/claude-collector-debug.jsonl \
   --allow-body-ref \
+  --body-ref-cleanup-roots /tmp/claude-code-otel-bodies \
   --forward-logs=false
 ```
 
@@ -247,9 +250,11 @@ Adds:
 - `trace.number` from `interaction.sequence`
 - `input.value` from `user_prompt` when `OTEL_LOG_USER_PROMPTS=1`
 
-## Body Ref Cleanup
+## Body Ref Files
 
-`body_ref` reading is disabled by default because the collector must read local files to attach inputs and outputs. Cleanup is opt-in: when `CLAUDE_COLLECTOR_BODY_REF_CLEANUP_ROOTS` is set, the collector deletes only body-ref files it successfully read, only under configured directories, and only with allowed suffixes after `CLAUDE_COLLECTOR_BODY_REF_CLEANUP_TTL`.
+`body_ref` reading is off by default. When `--allow-body-ref` (`CLAUDE_COLLECTOR_ALLOW_BODY_REF`) is enabled, `--body-ref-cleanup-roots` (`CLAUDE_COLLECTOR_BODY_REF_CLEANUP_ROOTS`) is also required: it is the allow-list of directories from which `body_ref` files may be read. The collector resolves symlinks on the request's path and on each configured root, then rejects any read whose resolved path is outside every root or whose suffix is not in `--body-ref-cleanup-suffixes`. This protects against a network-reachable attacker setting `body_ref=/etc/passwd` on the unauthenticated `/v1/logs` endpoint and exfiltrating the contents through correlated trace spans.
+
+Cleanup uses the same allow-list: files successfully read are eligible for deletion after `CLAUDE_COLLECTOR_BODY_REF_CLEANUP_TTL`, only under the configured roots, and only with allowed suffixes.
 
 ## Non-Goals
 
