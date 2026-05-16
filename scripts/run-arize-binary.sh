@@ -23,7 +23,7 @@ if [[ ! -x bin/claude-collector ]]; then
   go build -o bin/claude-collector ./cmd/claude-collector
 fi
 
-export CLAUDE_COLLECTOR_EXPORTER_HEADERS="space_id=${ARIZE_SPACE_ID},api_key=${ARIZE_API_KEY}"
+export CLAUDE_COLLECTOR_EXPORTER_HEADERS="arize-space-id=${ARIZE_SPACE_ID},arize-api-key=${ARIZE_API_KEY}"
 
 exec "$ROOT_DIR/bin/claude-collector" \
   --listen "${CLAUDE_COLLECTOR_LISTEN:-:14318}" \
